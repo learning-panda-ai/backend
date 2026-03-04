@@ -1,4 +1,36 @@
-__pycache__
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Environment ───────────────────────────────────────────────────────────────
 .env
+.env.*
+!.env.example
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Alembic ───────────────────────────────────────────────────────────────────
+# Keep versions/ tracked; ignore only runtime artefacts
+alembic/__pycache__/
+alembic/versions/__pycache__/
+
+# ── Misc / secrets ────────────────────────────────────────────────────────────
 generate_token.py
+*.log
+.DS_Store
+
 .pytest_cache/

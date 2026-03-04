@@ -2,7 +2,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_admin_user
+from app.models.user import User
 from app.schemas.upload import Board, Standard, State, Subject
 from app.services.s3 import upload_file_to_s3
 
@@ -22,6 +23,7 @@ router = APIRouter()
         200: {"description": "File uploaded successfully."},
         400: {"description": "Empty file provided."},
         401: {"description": "Missing, invalid, or expired access token."},
+        403: {"description": "Administrator access required."},
         413: {"description": "File exceeds the allowed size limit."},
         415: {"description": "File type is not supported."},
         422: {"description": "Invalid board / standard / subject / state value."},
@@ -41,7 +43,7 @@ async def upload_file(
         ),
     ),
     file: UploadFile = File(..., description="The file to upload."),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
 ):
     """
     Authenticated file upload endpoint.
@@ -64,5 +66,5 @@ async def upload_file(
         "state": resolved_state,
         "standard": standard.value,
         "subject": subject.value,
-        "uploaded_by": current_user.get("sub"),
+        "uploaded_by": str(current_user.id),
     }

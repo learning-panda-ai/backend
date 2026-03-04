@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.models.user import UserRole
+
 
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -13,6 +15,7 @@ class UserOut(BaseModel):
     # avatar_url in DB, serialised as "image" to match frontend expectations
     image: str | None = Field(None, validation_alias="avatar_url")
     is_onboarded: bool
+    role: UserRole = UserRole.user
     courses: list[str] = Field(default_factory=list)
 
     # Profile fields
