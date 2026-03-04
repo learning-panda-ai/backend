@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -24,6 +24,7 @@ class UserOut(BaseModel):
     city: str | None = None
     state: str | None = None
     grade: str | None = None
+    school_board: str | None = None
     parent_name: str | None = None
     parent_mobile: str | None = None
     parent_email: str | None = None
@@ -31,6 +32,11 @@ class UserOut(BaseModel):
     study_feeling: str | None = None
     career_thoughts: str | None = None
     strengths_interest: str | None = None
+
+    # Streak fields
+    current_streak: int = 0
+    longest_streak: int = 0
+    last_activity_date: date | None = None
 
     created_at: datetime
 
@@ -58,6 +64,8 @@ class ProfileUpdateRequest(BaseModel):
     city: str | None = None
     state: str | None = None
     grade: str | None = None
+    school_board: str | None = None
     parent_name: str | None = None
     parent_mobile: str | None = None
     parent_email: str | None = None
+    courses: list[str] | None = None

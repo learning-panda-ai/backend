@@ -3,8 +3,10 @@ User profile endpoints.
 
 PATCH /user/profile     — update basic profile fields
 POST  /user/onboarding  — complete onboarding (all fields required)
+POST  /user/activity    — record daily activity and update streak
 """
 import logging
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,12 +37,16 @@ async def update_profile(
         current_user.state = body.state
     if body.grade is not None:
         current_user.grade = body.grade
+    if body.school_board is not None:
+        current_user.school_board = body.school_board
     if body.parent_name is not None:
         current_user.parent_name = body.parent_name
     if body.parent_mobile is not None:
         current_user.parent_mobile = body.parent_mobile
     if body.parent_email is not None:
         current_user.parent_email = body.parent_email
+    if body.courses is not None:
+        current_user.courses = body.courses
 
     # Keep display name in sync
     fn = body.first_name or current_user.first_name
@@ -79,4 +85,40 @@ async def complete_onboarding(
     current_user.is_onboarded = True
 
     logger.info("User %s completed onboarding", current_user.id)
+    return UserOut.model_validate(current_user)
+
+
+@router.post("/activity", response_model=UserOut)
+async def record_activity(
+    current_user: User = Depends(get_current_db_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserOut:
+    """Record today's activity and update the user's streak.
+
+    - If last_activity_date is today → no change (idempotent).
+    - If last_activity_date is yesterday → increment current_streak.
+    - Otherwise (gap > 1 day or first activity) → reset current_streak to 1.
+    - Updates longest_streak if current_streak exceeds it.
+    """
+    today = date.today()
+    last = current_user.last_activity_date
+
+    if last == today:
+        # Already recorded today — return as-is
+        return UserOut.model_validate(current_user)
+
+    if last is not None and last == today - timedelta(days=1):
+        current_user.current_streak += 1
+    else:
+        current_user.current_streak = 1
+
+    if current_user.current_streak > current_user.longest_streak:
+        current_user.longest_streak = current_user.current_streak
+
+    current_user.last_activity_date = today
+
+    await db.flush()
+    logger.info(
+        "User %s activity recorded — streak=%d", current_user.id, current_user.current_streak
+    )
     return UserOut.model_validate(current_user)
