@@ -1,0 +1,4 @@
+__pycache__
+.env
+generate_token.py
+.pytest_cache/
