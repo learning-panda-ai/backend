@@ -17,11 +17,20 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+import redis.asyncio as aioredis
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_db_user
+from app.core.rate_limit import (
+    check_otp_verify_rate_limit,
+    check_refresh_rate_limit,
+    clear_otp_failures,
+    record_otp_failure,
+)
+from app.core.redis import consume_exchange_code, create_exchange_code, get_redis
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -35,6 +44,7 @@ from app.schemas.token import TokenWithUser
 from app.schemas.user import UserOut
 from app.services import email as email_svc
 from app.services import google as google_svc
+from app.services.turnstile import verify_turnstile
 from app.core.config import settings
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -130,15 +140,20 @@ async def _check_otp_rate_limit(db: AsyncSession, email: str) -> None:
 @router.post("/send-otp", status_code=status.HTTP_200_OK)
 async def send_otp(
     body: SendOtpRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
     Generate a 6-digit OTP and a magic-link token, persist their hashes,
     and deliver both via an AWS SES email.
 
+    Requires a valid Cloudflare Turnstile token (server-side verification).
     Rate-limited to {OTP_RATE_LIMIT_COUNT} requests per {OTP_RATE_LIMIT_WINDOW_MINUTES} minutes
     per email address.
     """
+    # Verify Turnstile FIRST — before any DB work or email sending
+    await verify_turnstile(body.turnstile_token, request)
+
     email = body.email.lower()
 
     await _check_otp_rate_limit(db, email)
@@ -177,36 +192,48 @@ async def send_otp(
 @router.post("/verify-otp", response_model=TokenWithUser)
 async def verify_otp(
     body: VerifyOtpRequest,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
 ) -> TokenWithUser:
     """
     Verify a 6-digit OTP code.  On success, issue JWT access + refresh tokens
     and set them as httpOnly cookies.
+
+    Rate-limited per email (10 attempts / 15 min) and per IP (30 / 15 min).
+    Locked out for 15 minutes after 5 consecutive failures.
     """
     email = body.email.lower()
+
+    # Rate limit BEFORE hitting the DB — fail fast for brute-forcers
+    await check_otp_verify_rate_limit(redis, request, email)
+
     otp_hash = _sha256(body.otp_code)
     now = datetime.now(timezone.utc)
 
-    result = await db.execute(
-        select(OtpToken)
+    # Atomic consume: UPDATE ... SET used_at = now WHERE conditions AND used_at IS NULL
+    # A single statement prevents two concurrent requests from both succeeding (race condition).
+    consume_result = await db.execute(
+        update(OtpToken)
         .where(OtpToken.email == email)
         .where(OtpToken.otp_hash == otp_hash)
         .where(OtpToken.expires_at > now)
         .where(OtpToken.used_at.is_(None))
-        .order_by(OtpToken.created_at.desc())
-        .limit(1)
+        .values(used_at=now)
+        .returning(OtpToken.id)
     )
-    token_record: OtpToken | None = result.scalar_one_or_none()
+    consumed_id = consume_result.scalar_one_or_none()
 
-    if token_record is None:
+    if consumed_id is None:
+        # Track consecutive failures for lockout
+        await record_otp_failure(redis, email)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired OTP code.",
         )
 
-    # Consume the token (prevents replay)
-    token_record.used_at = now
+    # Success — reset failure counter
 
     user = await _get_or_create_user(db, email=email)
     user.is_verified = True
@@ -223,46 +250,52 @@ async def verify_magic(
     token: str,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
 ) -> RedirectResponse:
     """
     Verify a magic-link token (delivered via email).
 
-    On success, issues tokens and redirects the browser to:
-      {FRONTEND_URL}/auth/callback?at=<access>&rt=<refresh>
-
-    The frontend stores these tokens and finalises the session.
+    On success, issues a short-lived one-time exchange code and redirects
+    the browser to {FRONTEND_URL}/auth/callback?code=<otc>.
+    The frontend exchanges the code for tokens via /api/auth/exchange-code.
+    JWTs never appear in the URL, protecting against leakage via browser
+    history, server logs, and Referer headers.
     """
     magic_hash = _sha256(token)
     now = datetime.now(timezone.utc)
 
-    result = await db.execute(
-        select(OtpToken)
+    # Atomically consume the magic-link token to prevent concurrent replay
+    consume_result = await db.execute(
+        update(OtpToken)
         .where(OtpToken.magic_hash == magic_hash)
         .where(OtpToken.expires_at > now)
         .where(OtpToken.used_at.is_(None))
-        .order_by(OtpToken.created_at.desc())
-        .limit(1)
+        .values(used_at=now)
+        .returning(OtpToken.email)
     )
-    token_record: OtpToken | None = result.scalar_one_or_none()
+    consumed_email: str | None = consume_result.scalar_one_or_none()
 
-    if token_record is None:
+    if consumed_email is None:
         # Redirect to an error page rather than returning JSON — this is a browser request
         return RedirectResponse(
             url=f"{settings.FRONTEND_URL}/auth/error?reason=invalid_magic_link",
             status_code=status.HTTP_302_FOUND,
         )
 
-    token_record.used_at = now
-    user = await _get_or_create_user(db, email=token_record.email)
+    user = await _get_or_create_user(db, email=consumed_email)
     user.is_verified = True
 
     access = create_access_token(str(user.id))
-    refresh = create_refresh_token(str(user.id))
+    refresh_tok = create_refresh_token(str(user.id))
+
+    # Store tokens under a one-time exchange code — never put JWTs in the URL
+    code = await create_exchange_code(redis, access, refresh_tok)
 
     logger.info("User %s signed in via magic link", user.id)
 
-    # Redirect to frontend callback handler — consistent with Google OAuth pattern
-    redirect_url = f"{settings.FRONTEND_URL}/auth/callback?at={access}&rt={refresh}"
+    # Redirect to the server-side Next.js callback handler which exchanges the
+    # code, sets httpOnly cookies, and redirects to the appropriate page.
+    redirect_url = f"{settings.FRONTEND_URL}/api/auth/callback?code={code}"
     return RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
 
 
@@ -281,6 +314,7 @@ async def google_callback(
     code: str,
     state: str,
     db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
 ) -> RedirectResponse:
     """
     Handle the Google OAuth callback.
@@ -335,11 +369,16 @@ async def google_callback(
     account.expires_at = profile["expires_at"]
 
     access = create_access_token(str(user.id))
-    refresh = create_refresh_token(str(user.id))
+    refresh_tok = create_refresh_token(str(user.id))
+
+    # Store tokens under a one-time exchange code — never put JWTs in the URL
+    otc = await create_exchange_code(redis, access, refresh_tok)
 
     logger.info("User %s signed in via Google", user.id)
 
-    redirect_url = f"{settings.FRONTEND_URL}/auth/callback?at={access}&rt={refresh}"
+    # Redirect to the server-side Next.js callback handler which exchanges the
+    # code, sets httpOnly cookies, and redirects to the appropriate page.
+    redirect_url = f"{settings.FRONTEND_URL}/api/auth/callback?code={otc}"
     return RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
 
 
@@ -348,24 +387,20 @@ async def refresh(
     request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
     # Cookie-based refresh token (web clients)
     lp_refresh_token: str | None = Cookie(default=None),
 ) -> TokenWithUser:
     """
     Issue a new access + refresh token pair.
 
-    Accepts the refresh token from either:
-      - The `lp_refresh_token` httpOnly cookie (web browser clients)
-      - A JSON body `{"refresh_token": "..."}` (API / mobile clients)
+    Accepts the refresh token exclusively from the `lp_refresh_token` httpOnly
+    cookie. JSON body is intentionally not supported — this prevents CSRF-style
+    token injection and mixed-mode auth confusion.
     """
-    token: str | None = lp_refresh_token
+    await check_refresh_rate_limit(redis, request)
 
-    if not token:
-        try:
-            body = await request.json()
-            token = body.get("refresh_token")
-        except Exception:
-            pass
+    token: str | None = lp_refresh_token
 
     if not token:
         raise HTTPException(
@@ -394,6 +429,53 @@ async def refresh(
     token_response = _build_token_response(user)
     _set_auth_cookies(response, token_response.access_token, token_response.refresh_token)
     return token_response
+
+
+@router.post("/exchange-code", response_model=TokenWithUser)
+async def exchange_code(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+) -> TokenWithUser:
+    """
+    Exchange a one-time code (issued by magic-link or Google OAuth redirects)
+    for an access + refresh token pair.
+
+    The code is valid for 60 seconds and is deleted on first use (atomic GETDEL).
+    This endpoint replaces the insecure practice of embedding raw JWTs in redirect URLs.
+    """
+    import uuid as _uuid
+
+    body = await request.json()
+    code: str | None = body.get("code")
+    if not code:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing code.")
+
+    access_token, refresh_token = await consume_exchange_code(redis, code)
+
+    # Decode the access token to get the user (already validated during creation)
+    from app.core.security import verify_access_token
+    payload = verify_access_token(access_token)
+    user_id_str: str = payload["sub"]
+
+    try:
+        user_id = _uuid.UUID(user_id_str)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code.")
+
+    user: User | None = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not found.")
+
+    _set_auth_cookies(response, access_token, refresh_token)
+    logger.info("User %s completed OAuth/magic-link exchange", user.id)
+
+    return TokenWithUser(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=UserOut.model_validate(user),
+    )
 
 
 @router.get("/me", response_model=UserOut)

@@ -2,10 +2,9 @@ from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, Request, status
 
 from app.core.dependencies import get_current_admin_user
-from app.models.user import User
+from app.models.admin_user import AdminUser
 from app.schemas.ingest import IngestJobResponse, IngestRequest, IngestStatusResponse
 from app.worker.celery_app import celery_app
-from app.worker.tasks import ingest_pdf_task
 
 router = APIRouter()
 
@@ -41,9 +40,12 @@ _CELERY_STATE_MAP = {
 async def enqueue_ingest_pdf(
     body: IngestRequest,
     request: Request,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: AdminUser = Depends(get_current_admin_user),
 ) -> IngestJobResponse:
-    task = ingest_pdf_task.delay(str(body.url), body.replace)
+    task = celery_app.send_task(
+        "ingest_pdf_task",
+        args=[str(body.url), body.replace],
+    )
     status_url = str(request.url_for("get_ingest_status", task_id=task.id))
     return IngestJobResponse(
         task_id=task.id,
@@ -70,7 +72,7 @@ async def enqueue_ingest_pdf(
 )
 async def get_ingest_status(
     task_id: str,
-    current_user: User = Depends(get_current_admin_user),
+    current_user: AdminUser = Depends(get_current_admin_user),
 ) -> IngestStatusResponse:
     async_result = AsyncResult(task_id, app=celery_app)
     friendly_status = _CELERY_STATE_MAP.get(async_result.state, "queued")

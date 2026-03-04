@@ -1,4 +1,25 @@
+import uuid
+from datetime import datetime
 from enum import Enum
+
+from pydantic import BaseModel, ConfigDict
+
+
+class UploadedFileOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    filename: str
+    s3_url: str
+    content_type: str
+    board: str
+    standard: str
+    subject: str
+    state: str
+    ingest_status: str
+    celery_task_id: str | None = None
+    uploaded_at: datetime
+    ingested_at: datetime | None = None
 
 
 class State(str, Enum):

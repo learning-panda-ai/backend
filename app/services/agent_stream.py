@@ -5,6 +5,7 @@ Mirrors the logic in learning_panda_agent/agent.py but streams tokens via async 
 
 import asyncio
 import json
+import re
 from typing import AsyncGenerator
 
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -56,7 +57,8 @@ def _retrieve_docs(query: str, class_name: str, subject: str, top_k: int = 5) ->
     """Sync retrieval from Milvus — called via asyncio.to_thread."""
     c = class_name.strip().lower().replace(" ", "_")
     s = subject.strip().lower().replace(" ", "_")
-    collection_name = f"class_{c}_{s}"
+    raw = f"class_{c}_{s}"
+    collection_name = re.sub(r"_+", "_", re.sub(r"[^a-z0-9_]", "_", raw)).strip("_")
 
     client = MilvusClient(settings.MILVUS_URI)
     if not client.has_collection(collection_name):

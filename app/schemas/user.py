@@ -1,9 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
-
-from app.models.user import UserRole
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class UserOut(BaseModel):
@@ -14,8 +12,8 @@ class UserOut(BaseModel):
     name: str | None
     # avatar_url in DB, serialised as "image" to match frontend expectations
     image: str | None = Field(None, validation_alias="avatar_url")
+    is_active: bool
     is_onboarded: bool
-    role: UserRole = UserRole.user
     courses: list[str] = Field(default_factory=list)
 
     # Profile fields
@@ -69,3 +67,23 @@ class ProfileUpdateRequest(BaseModel):
     parent_mobile: str | None = None
     parent_email: str | None = None
     courses: list[str] | None = None
+
+
+class UserAdminOut(BaseModel):
+    """User record as returned to the admin panel."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: str
+    name: str | None
+    is_active: bool
+    is_verified: bool
+    is_onboarded: bool
+    grade: str | None = None
+    school_board: str | None = None
+    created_at: datetime
+
+
+class UserStatusUpdateRequest(BaseModel):
+    is_active: bool

@@ -65,6 +65,10 @@ def verify_access_token(token: str) -> dict:
     if not payload.get("sub"):
         raise _CREDENTIALS_EXCEPTION
 
+    # Reject refresh / admin tokens presented as access tokens
+    if payload.get("type") != "access":
+        raise _CREDENTIALS_EXCEPTION
+
     return payload
 
 
@@ -102,3 +106,56 @@ def verify_refresh_token(token: str) -> str:
             detail="Invalid token type.",
         )
     return sub
+
+
+# ── Admin token helpers ───────────────────────────────────────────────────────
+
+
+def create_admin_access_token(subject: str) -> str:
+    """Create a short-lived JWT access token exclusively for admin users.
+
+    Uses token type ``"admin_access"`` so it cannot be accepted by endpoints
+    that expect a regular user token (and vice-versa).
+    """
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+    payload: dict[str, Any] = {
+        "sub": subject,
+        "exp": expire,
+        "type": "admin_access",
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def verify_admin_access_token(token: str) -> dict:
+    """Decode and validate a JWT admin Bearer token.
+
+    Raises HTTP 401 when the token is invalid/expired and HTTP 403 when the
+    token type is not ``"admin_access"``.
+    """
+    try:
+        payload: dict = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin access token has expired.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except JWTError:
+        raise _CREDENTIALS_EXCEPTION
+
+    if not payload.get("sub"):
+        raise _CREDENTIALS_EXCEPTION
+
+    if payload.get("type") != "admin_access":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator token required.",
+        )
+
+    return payload

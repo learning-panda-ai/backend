@@ -42,8 +42,13 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
 
     # ── Cookie security ───────────────────────────────────────────────────────
-    # Set True in production (requires HTTPS)
-    COOKIE_SECURE: bool = False
+    # Defaults True (HTTPS required). Set COOKIE_SECURE=false only for local dev.
+    COOKIE_SECURE: bool = True
+
+    # ── Cloudflare Turnstile ──────────────────────────────────────────────────
+    # Server-side secret for Turnstile CAPTCHA verification.
+    # Leave empty to skip verification in local dev (enforced in production).
+    TURNSTILE_SECRET_KEY: Optional[str] = None
 
     # ── OTP ───────────────────────────────────────────────────────────────────
     OTP_EXPIRY_MINUTES: int = 10

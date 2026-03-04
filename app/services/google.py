@@ -10,6 +10,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import TypedDict
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import HTTPException, status
@@ -91,8 +92,7 @@ def build_authorization_url() -> str:
         "access_type": "offline",   # request refresh_token
         "prompt": "select_account",  # always show account picker
     }
-    query_string = "&".join(f"{k}={v}" for k, v in params.items())
-    return f"{_GOOGLE_AUTH_URL}?{query_string}"
+    return f"{_GOOGLE_AUTH_URL}?{urlencode(params)}"
 
 
 async def exchange_code(*, code: str, state: str) -> GoogleProfile:

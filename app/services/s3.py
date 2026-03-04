@@ -1,6 +1,8 @@
 import uuid
+from urllib.parse import quote
 
 import boto3
+import filetype
 from botocore.exceptions import ClientError, NoCredentialsError
 from fastapi import HTTPException, UploadFile, status
 
@@ -91,30 +93,63 @@ async def upload_file_to_s3(
             ),
         )
 
-    # 2. Read into memory and enforce size limit
+    # 2. Enforce size limit via Content-Length header before reading the body.
+    #    Then stream-read with a hard cap so a lying/missing header is still safe.
     max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    content = await file.read()
 
-    if len(content) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file is empty.",
-        )
-
-    if len(content) > max_bytes:
+    declared_size = file.size  # populated by python-multipart from Content-Length
+    if declared_size is not None and declared_size > max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File size exceeds the {settings.MAX_UPLOAD_SIZE_MB} MB limit.",
         )
 
-    # 3. Upload to S3
+    # Read in chunks so an absent/forged Content-Length cannot exhaust memory
+    chunks: list[bytes] = []
+    total = 0
+    chunk_size = 256 * 1024  # 256 KB
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File size exceeds the {settings.MAX_UPLOAD_SIZE_MB} MB limit.",
+            )
+        chunks.append(chunk)
+
+    content = b"".join(chunks)
+
+    if total == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty.",
+        )
+
+    # 3. Magic-byte MIME verification — client-supplied Content-Type can be spoofed.
+    #    Detect the actual type from file bytes and reject if it doesn't match the allowlist.
+    detected = filetype.guess(content)
+    actual_mime = detected.mime if detected else "application/octet-stream"
+    if actual_mime not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                f"File content does not match an allowed type "
+                f"(detected: '{actual_mime}'). "
+                f"Allowed types: {sorted(ALLOWED_CONTENT_TYPES)}"
+            ),
+        )
+
+    # 4. Upload to S3
     key = _build_object_key(file.filename or "file", board, state, standard, subject)
     try:
         _s3_client().put_object(
             Bucket=settings.S3_BUCKET_NAME,
             Key=key,
             Body=content,
-            ContentType=file.content_type,
+            ContentType=actual_mime,  # use verified type, not client-supplied header
         )
     except NoCredentialsError:
         raise HTTPException(
@@ -127,9 +162,10 @@ async def upload_file_to_s3(
             detail=f"S3 upload failed: {exc.response['Error']['Message']}",
         )
 
-    # 4. Return the permanent object URL
+    # 4. Return the permanent object URL (percent-encode spaces/special chars,
+    #    but keep '/' intact so the path structure is preserved).
     url = (
         f"https://{settings.S3_BUCKET_NAME}"
-        f".s3.{settings.AWS_REGION}.amazonaws.com/{key}"
+        f".s3.{settings.AWS_REGION}.amazonaws.com/{quote(key, safe='/')}"
     )
     return url

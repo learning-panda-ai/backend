@@ -5,7 +5,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import verify_access_token
+from app.core.security import verify_access_token, verify_admin_access_token
 
 _bearer = HTTPBearer()
 
@@ -53,20 +53,61 @@ async def get_current_db_user(
     return user
 
 
-async def get_current_admin_user(
-    current_user: "User" = Depends(get_current_db_user),
-) -> "User":
+async def get_current_active_db_user(
+    user: "User" = Depends(get_current_db_user),
+):
     """
-    FastAPI dependency — ensures the authenticated user has the 'admin' role.
+    FastAPI dependency — same as get_current_db_user but additionally enforces
+    that the account is active (is_active=True).  Use this on all paid / gated
+    endpoints (chat, agent, profile, activity, courses).
 
-    Raises HTTP 403 when the user exists but is not an admin.
-    Chain after get_current_db_user so admin routes also get a full DB user object.
+    Inactive users receive HTTP 403 so the frontend can redirect to /suspended
+    rather than /login.
     """
-    from app.models.user import UserRole  # local import avoids circular deps
-
-    if current_user.role != UserRole.admin.value:
+    if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Administrator access required.",
+            detail="Your account is not yet activated. Please contact support.",
         )
-    return current_user
+    return user
+
+
+async def get_current_admin_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    FastAPI dependency — validates an admin Bearer token and returns the
+    corresponding AdminUser record from the ``admin_users`` table.
+
+    The token must have been issued by the ``/admin/auth/login`` endpoint
+    (token type ``"admin_access"``). Regular user tokens are rejected with
+    HTTP 403.  Inactive admin accounts are rejected with HTTP 401.
+    """
+    from app.models.admin_user import AdminUser  # local import avoids circular deps
+
+    payload = verify_admin_access_token(credentials.credentials)
+
+    admin_id_str: str = payload["sub"]
+    try:
+        admin_id = uuid.UUID(admin_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token subject.",
+        )
+
+    admin: AdminUser | None = await db.get(AdminUser, admin_id)
+    if admin is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin user not found.",
+        )
+
+    if not admin.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin account is deactivated.",
+        )
+
+    return admin

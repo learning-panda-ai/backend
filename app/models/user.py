@@ -1,4 +1,3 @@
-import enum
 import uuid
 from datetime import date, datetime
 
@@ -7,13 +6,6 @@ from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-
-
-class UserRole(str, enum.Enum):
-    """User role / permission level."""
-
-    admin = "admin"
-    user = "user"
 
 
 class User(Base):
@@ -30,11 +22,7 @@ class User(Base):
 
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_onboarded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-    # ── Role ─────────────────────────────────────────────────────────────────
-    role: Mapped[str] = mapped_column(
-        String(20), nullable=False, default=UserRole.user.value, server_default="user"
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default="true")
 
     # ── Profile / onboarding fields ───────────────────────────────────────────
     first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)

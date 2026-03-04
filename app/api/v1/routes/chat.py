@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_db_user
+from app.core.dependencies import get_current_active_db_user
 from app.models.chat import ChatMessage, ChatSession
 from app.models.user import User
 from app.schemas.chat import (
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 @router.post("/sessions", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
 async def create_session(
     body: CreateSessionRequest,
-    current_user: User = Depends(get_current_db_user),
+    current_user: User = Depends(get_current_active_db_user),
     db: AsyncSession = Depends(get_db),
 ) -> SessionOut:
     session = ChatSession(
@@ -52,7 +52,7 @@ async def create_session(
 
 @router.get("/sessions", response_model=list[SessionOut])
 async def list_sessions(
-    current_user: User = Depends(get_current_db_user),
+    current_user: User = Depends(get_current_active_db_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[SessionOut]:
     result = await db.execute(
@@ -68,7 +68,7 @@ async def list_sessions(
 @router.get("/sessions/{session_id}", response_model=SessionDetailOut)
 async def get_session(
     session_id: uuid.UUID,
-    current_user: User = Depends(get_current_db_user),
+    current_user: User = Depends(get_current_active_db_user),
     db: AsyncSession = Depends(get_db),
 ) -> SessionDetailOut:
     result = await db.execute(
@@ -85,7 +85,7 @@ async def get_session(
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_session(
     session_id: uuid.UUID,
-    current_user: User = Depends(get_current_db_user),
+    current_user: User = Depends(get_current_active_db_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     result = await db.execute(
@@ -103,7 +103,7 @@ async def delete_session(
 async def save_messages(
     session_id: uuid.UUID,
     body: SaveMessagesRequest,
-    current_user: User = Depends(get_current_db_user),
+    current_user: User = Depends(get_current_active_db_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     result = await db.execute(
