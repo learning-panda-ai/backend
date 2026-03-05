@@ -134,16 +134,22 @@ async def get_available_subjects(
 ) -> list[str]:
     """Return distinct subjects that have been ingested by admin for the user's class.
 
-    Filters uploaded_files by board, standard (grade), and state matching the user's
-    profile, restricted to successfully ingested files.
+    Filters uploaded_files by board and standard matching the user's profile,
+    restricted to successfully ingested files.
+
+    Grade format normalisation: onboarding stores grade as "class-10" while the
+    admin upload form stores standard as "Class 10".  We convert before querying.
     """
     if not current_user.grade or not current_user.school_board:
         return []
 
+    # "class-10" → "Class 10"  (matches the admin STANDARDS constant)
+    standard = current_user.grade.replace("-", " ").title()
+
     stmt = (
         select(UploadedFile.subject)
         .where(
-            UploadedFile.standard == current_user.grade,
+            UploadedFile.standard == standard,
             UploadedFile.board == current_user.school_board,
             UploadedFile.ingest_status == "completed",
         )
