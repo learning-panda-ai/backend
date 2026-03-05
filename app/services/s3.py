@@ -169,3 +169,4 @@ async def upload_file_to_s3(
         f".s3.{settings.AWS_REGION}.amazonaws.com/{quote(key, safe='/')}"
     )
     return url
+

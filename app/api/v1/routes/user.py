@@ -1,18 +1,21 @@
 """
 User profile endpoints.
 
-PATCH /user/profile     — update basic profile fields
-POST  /user/onboarding  — complete onboarding (all fields required)
-POST  /user/activity    — record daily activity and update streak
+PATCH /user/profile            — update basic profile fields
+POST  /user/onboarding         — complete onboarding (all fields required)
+POST  /user/activity           — record daily activity and update streak
+GET   /user/available-subjects — subjects ingested by admin for the user's class
 """
 import logging
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_db_user
+from app.models.uploaded_file import UploadedFile
 from app.models.user import User
 from app.schemas.user import OnboardingRequest, ProfileUpdateRequest, UserOut
 
@@ -122,3 +125,31 @@ async def record_activity(
         "User %s activity recorded — streak=%d", current_user.id, current_user.current_streak
     )
     return UserOut.model_validate(current_user)
+
+
+@router.get("/available-subjects", response_model=list[str])
+async def get_available_subjects(
+    current_user: User = Depends(get_current_db_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[str]:
+    """Return distinct subjects that have been ingested by admin for the user's class.
+
+    Filters uploaded_files by board, standard (grade), and state matching the user's
+    profile, restricted to successfully ingested files.
+    """
+    if not current_user.grade or not current_user.school_board:
+        return []
+
+    stmt = (
+        select(UploadedFile.subject)
+        .where(
+            UploadedFile.standard == current_user.grade,
+            UploadedFile.board == current_user.school_board,
+            UploadedFile.ingest_status == "completed",
+        )
+        .distinct()
+        .order_by(UploadedFile.subject)
+    )
+
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
