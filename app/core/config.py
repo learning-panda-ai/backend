@@ -1,5 +1,4 @@
 from functools import lru_cache
-from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,7 +16,7 @@ class Settings(BaseSettings):
 
     # ── Database ─────────────────────────────────────────────────────────────
     # postgresql+asyncpg://user:pass@host/dbname
-    DATABASE_URL: Optional[str] = None
+    DATABASE_URL: str
 
     # ── AWS ──────────────────────────────────────────────────────────────────
     AWS_ACCESS_KEY_ID: str
@@ -28,27 +27,25 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int
 
     # AWS SES — sender address must be verified in SES
-    SES_FROM_EMAIL: Optional[str] = None
+    SES_FROM_EMAIL: str
     SES_FROM_NAME: str = "Learning Panda"
 
     # ── Google OAuth ──────────────────────────────────────────────────────────
-    GOOGLE_CLIENT_ID: Optional[str] = None
-    GOOGLE_CLIENT_SECRET: Optional[str] = None
+    GOOGLE_CLIENT_ID: str
+    GOOGLE_CLIENT_SECRET: str
     # Full callback URL that Google redirects to after consent
-    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
+    GOOGLE_REDIRECT_URI: str
 
     # ── Frontend ──────────────────────────────────────────────────────────────
     # After OAuth / magic-link the backend redirects here
-    FRONTEND_URL: str = "http://localhost:3000"
+    FRONTEND_URL: str
 
     # ── Cookie security ───────────────────────────────────────────────────────
-    # Defaults True (HTTPS required). Set COOKIE_SECURE=false only for local dev.
-    COOKIE_SECURE: bool = True
+    # Set COOKIE_SECURE=False only for local dev (HTTP). Must be True in production.
+    COOKIE_SECURE: bool
 
     # ── Cloudflare Turnstile ──────────────────────────────────────────────────
-    # Server-side secret for Turnstile CAPTCHA verification.
-    # Leave empty to skip verification in local dev (enforced in production).
-    TURNSTILE_SECRET_KEY: Optional[str] = None
+    TURNSTILE_SECRET_KEY: str
 
     # ── OTP ───────────────────────────────────────────────────────────────────
     OTP_EXPIRY_MINUTES: int = 10
@@ -73,7 +70,6 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
 
-# Module-level singleton keeps backward compat with existing `from app.core.config import settings`
 settings = Settings()
 
 
