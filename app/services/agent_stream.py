@@ -64,6 +64,7 @@ def _retrieve_docs(query: str, class_name: str, subject: str, top_k: int = 5) ->
     if not client.has_collection(collection_name):
         return []
 
+    client.load_collection(collection_name)
     query_vector = _get_embedder().encode(query)
     results = client.search(
         collection_name=collection_name,
