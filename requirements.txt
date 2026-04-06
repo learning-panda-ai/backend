@@ -131,7 +131,7 @@ opentelemetry-sdk==1.39.1
 opentelemetry-semantic-conventions==0.60b1
 orjson==3.11.7
 ormsgpack==1.12.2
-packaging @ file:///home/task_176104885106445/conda-bld/packaging_1761049078006/work
+packaging==24.2
 pandas==2.3.3
 passlib==1.7.4
 pathlib==1.0.1
