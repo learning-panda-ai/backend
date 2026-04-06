@@ -17,7 +17,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_db_user
 from app.models.uploaded_file import UploadedFile
 from app.models.user import User
-from app.schemas.user import OnboardingRequest, ProfileUpdateRequest, UserOut
+from app.schemas.user import OnboardingOptionsResponse, OnboardingRequest, ProfileUpdateRequest, UserOut
 
 router = APIRouter(prefix="/user", tags=["User"])
 logger = logging.getLogger(__name__)
@@ -125,6 +125,33 @@ async def record_activity(
         "User %s activity recorded — streak=%d", current_user.id, current_user.current_streak
     )
     return UserOut.model_validate(current_user)
+
+
+@router.get("/onboarding-options", response_model=OnboardingOptionsResponse)
+async def get_onboarding_options(
+    current_user: User = Depends(get_current_db_user),
+    db: AsyncSession = Depends(get_db),
+) -> OnboardingOptionsResponse:
+    """Return available classes and their subjects from completed ingested files.
+
+    Used during onboarding to show only classes/subjects that have actual content.
+    Does not depend on the user's grade or school_board.
+    """
+    stmt = (
+        select(UploadedFile.standard, UploadedFile.subject)
+        .where(UploadedFile.ingest_status == "completed")
+        .distinct()
+        .order_by(UploadedFile.standard, UploadedFile.subject)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    subjects_by_class: dict[str, list[str]] = {}
+    for standard, subject in rows:
+        subjects_by_class.setdefault(standard, []).append(subject)
+
+    classes = sorted(subjects_by_class.keys())
+    return OnboardingOptionsResponse(classes=classes, subjects_by_class=subjects_by_class)
 
 
 @router.get("/available-subjects", response_model=list[str])

@@ -1,6 +1,6 @@
 from app.schemas.auth import SendOtpRequest, VerifyOtpRequest
 from app.schemas.token import TokenWithUser
-from app.schemas.user import OnboardingRequest, ProfileUpdateRequest, UserOut
+from app.schemas.user import OnboardingOptionsResponse, OnboardingRequest, ProfileUpdateRequest, UserOut
 
 __all__ = [
     "SendOtpRequest",
@@ -9,4 +9,5 @@ __all__ = [
     "UserOut",
     "ProfileUpdateRequest",
     "OnboardingRequest",
+    "OnboardingOptionsResponse",
 ]

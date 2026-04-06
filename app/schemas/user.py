@@ -48,12 +48,17 @@ class OnboardingRequest(BaseModel):
     parent_mobile: str
     parent_email: str
     grade: str
-    school_board: str
+    school_board: str | None = None
     courses: list[str]
     favorite_subject: str
     study_feeling: str
     career_thoughts: str
     strengths_interest: str
+
+
+class OnboardingOptionsResponse(BaseModel):
+    classes: list[str]
+    subjects_by_class: dict[str, list[str]]
 
 
 class ProfileUpdateRequest(BaseModel):
