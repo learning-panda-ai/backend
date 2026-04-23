@@ -137,6 +137,12 @@ async def _check_otp_rate_limit(db: AsyncSession, email: str) -> None:
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
+def _is_mobile_request(request: Request) -> bool:
+    """Return True when the request carries a valid mobile API key header."""
+    key = request.headers.get("X-Mobile-API-Key", "")
+    return bool(settings.MOBILE_API_KEY and key == settings.MOBILE_API_KEY)
+
+
 @router.post("/send-otp", status_code=status.HTTP_200_OK)
 async def send_otp(
     body: SendOtpRequest,
@@ -147,12 +153,14 @@ async def send_otp(
     Generate a 6-digit OTP and a magic-link token, persist their hashes,
     and deliver both via an AWS SES email.
 
-    Requires a valid Cloudflare Turnstile token (server-side verification).
+    Requires a valid Cloudflare Turnstile token (server-side verification),
+    OR a valid X-Mobile-API-Key header (native mobile clients).
     Rate-limited to {OTP_RATE_LIMIT_COUNT} requests per {OTP_RATE_LIMIT_WINDOW_MINUTES} minutes
     per email address.
     """
-    # Verify Turnstile FIRST — before any DB work or email sending
-    await verify_turnstile(body.turnstile_token, request)
+    # Native mobile clients skip Turnstile — they authenticate via API key instead.
+    if not _is_mobile_request(request):
+        await verify_turnstile(body.turnstile_token, request)
 
     email = body.email.lower()
 
@@ -394,13 +402,20 @@ async def refresh(
     """
     Issue a new access + refresh token pair.
 
-    Accepts the refresh token exclusively from the `lp_refresh_token` httpOnly
-    cookie. JSON body is intentionally not supported — this prevents CSRF-style
-    token injection and mixed-mode auth confusion.
+    Web clients: reads the refresh token from the `lp_refresh_token` httpOnly cookie.
+    Mobile clients: reads the refresh token from the JSON body field `refresh_token`.
     """
     await check_refresh_rate_limit(redis, request)
 
     token: str | None = lp_refresh_token
+
+    # Mobile clients send the refresh token in the request body
+    if not token and _is_mobile_request(request):
+        try:
+            body = await request.json()
+            token = body.get("refresh_token")
+        except Exception:
+            pass
 
     if not token:
         raise HTTPException(
@@ -484,6 +499,109 @@ async def get_me(
 ) -> UserOut:
     """Return the profile of the currently authenticated user."""
     return UserOut.model_validate(current_user)
+
+
+@router.post("/google/mobile", response_model=TokenWithUser)
+async def google_mobile_login(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> TokenWithUser:
+    """
+    Mobile Google Sign-In.
+
+    The native Android/iOS Google Sign-In SDK produces a Google ID token on the
+    device. This endpoint verifies that token with Google's tokeninfo API, then
+    upserts the user and issues LP JWT tokens — no browser redirect needed.
+
+    Requires X-Mobile-API-Key header.
+
+    Body: { "id_token": "<google_id_token>" }
+    """
+    if not _is_mobile_request(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint is restricted to mobile clients.",
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON body.")
+
+    id_token: str | None = body.get("id_token")
+    if not id_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing id_token.")
+
+    # Verify the ID token with Google
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"id_token": id_token},
+            )
+        profile = resp.json()
+    except Exception as exc:
+        logger.error("Google tokeninfo request failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not reach Google to verify token.",
+        )
+
+    if resp.status_code != 200 or not profile.get("email_verified"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or unverified Google ID token.",
+        )
+
+    # Reject tokens not issued for this app
+    if profile.get("aud") != settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google token audience mismatch.",
+        )
+
+    email: str = profile["email"].lower()
+    name: str | None = profile.get("name")
+    avatar_url: str | None = profile.get("picture")
+    provider_account_id: str = profile["sub"]
+
+    # Upsert user
+    result = await db.execute(select(User).where(User.email == email))
+    user: User | None = result.scalar_one_or_none()
+
+    if user is None:
+        user = User(email=email, name=name, avatar_url=avatar_url, is_verified=True)
+        db.add(user)
+        await db.flush()
+    else:
+        if user.name is None and name:
+            user.name = name
+        if user.avatar_url is None and avatar_url:
+            user.avatar_url = avatar_url
+        user.is_verified = True
+
+    # Upsert Google account link
+    acct_result = await db.execute(
+        select(Account)
+        .where(Account.provider == "google")
+        .where(Account.provider_account_id == provider_account_id)
+    )
+    account: Account | None = acct_result.scalar_one_or_none()
+    if account is None:
+        account = Account(
+            user_id=user.id,
+            provider="google",
+            provider_account_id=provider_account_id,
+        )
+        db.add(account)
+
+    token_response = _build_token_response(user)
+    _set_auth_cookies(response, token_response.access_token, token_response.refresh_token)
+
+    logger.info("User %s signed in via Google (mobile)", user.id)
+    return token_response
 
 
 @router.post("/logout", status_code=status.HTTP_200_OK)

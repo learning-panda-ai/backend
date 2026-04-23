@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # ── Cloudflare Turnstile ──────────────────────────────────────────────────
     TURNSTILE_SECRET_KEY: str
 
+    # ── Mobile ───────────────────────────────────────────────────────────────
+    # Static API key sent by native mobile clients (X-Mobile-API-Key header).
+    # When present and valid, Turnstile verification is skipped.
+    MOBILE_API_KEY: str = ""
+
     # ── OTP ───────────────────────────────────────────────────────────────────
     OTP_EXPIRY_MINUTES: int = 10
     # Max OTP send requests per email per window
