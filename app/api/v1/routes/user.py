@@ -9,7 +9,7 @@ GET   /user/available-subjects — subjects ingested by admin for the user's cla
 import logging
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -129,28 +129,39 @@ async def record_activity(
 
 @router.get("/onboarding-options", response_model=OnboardingOptionsResponse)
 async def get_onboarding_options(
+    board: str | None = Query(None),
     current_user: User = Depends(get_current_db_user),
     db: AsyncSession = Depends(get_db),
 ) -> OnboardingOptionsResponse:
     """Return available classes and their subjects from completed ingested files.
 
-    Used during onboarding to show only classes/subjects that have actual content.
-    Does not depend on the user's grade or school_board.
+    Classes are always unfiltered (all grades with any content).
+    Subjects are filtered by board when the `board` query param is provided.
     """
-    stmt = (
-        select(UploadedFile.standard, UploadedFile.subject)
+    classes_stmt = (
+        select(UploadedFile.standard)
         .where(UploadedFile.ingest_status == "completed")
         .distinct()
-        .order_by(UploadedFile.standard, UploadedFile.subject)
+        .order_by(UploadedFile.standard)
     )
-    result = await db.execute(stmt)
-    rows = result.all()
+
+    subjects_stmt = (
+        select(UploadedFile.standard, UploadedFile.subject)
+        .where(UploadedFile.ingest_status == "completed")
+    )
+    if board:
+        subjects_stmt = subjects_stmt.where(UploadedFile.board == board)
+    subjects_stmt = subjects_stmt.distinct().order_by(UploadedFile.standard, UploadedFile.subject)
+
+    classes_result = await db.execute(classes_stmt)
+    subjects_result = await db.execute(subjects_stmt)
+
+    classes = sorted([row[0] for row in classes_result.all()])
 
     subjects_by_class: dict[str, list[str]] = {}
-    for standard, subject in rows:
+    for standard, subject in subjects_result.all():
         subjects_by_class.setdefault(standard, []).append(subject)
 
-    classes = sorted(subjects_by_class.keys())
     return OnboardingOptionsResponse(classes=classes, subjects_by_class=subjects_by_class)
 
 
