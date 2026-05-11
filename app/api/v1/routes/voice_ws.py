@@ -1,8 +1,8 @@
 """
 Real-time voice chat via Gemini Live API.
 
-Browser ←── PCM16 audio (24 kHz) ──→ WebSocket ←── audio ──→ Gemini Live
-Browser ──── PCM16 audio (16 kHz) ──→ WebSocket ──── audio ──→ Gemini Live
+Browser <── PCM16 audio (24 kHz) ──> WebSocket <── audio ──> Gemini Live
+Browser <── PCM16 audio (16 kHz) ──> WebSocket <── audio ──> Gemini Live
 """
 
 import asyncio
