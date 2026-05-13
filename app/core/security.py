@@ -112,13 +112,13 @@ def verify_refresh_token(token: str) -> str:
 
 
 def create_admin_access_token(subject: str) -> str:
-    """Create a short-lived JWT access token exclusively for admin users.
+    """Create a long-lived JWT access token exclusively for admin users.
 
     Uses token type ``"admin_access"`` so it cannot be accepted by endpoints
     that expect a regular user token (and vice-versa).
     """
     expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        hours=settings.ADMIN_TOKEN_EXPIRE_HOURS
     )
     payload: dict[str, Any] = {
         "sub": subject,
