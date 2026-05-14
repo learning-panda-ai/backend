@@ -183,3 +183,39 @@ async def get_file_ingest_status(
 
     return UploadedFileOut.model_validate(file)
 
+
+# ── Pending file deletion (DB-only) ────────────────────────────────────────────
+
+@router.delete(
+    "/files/{file_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a pending file record",
+    description=(
+        "Deletes only the database record for a file when its ingest status is "
+        "'pending'. S3 object deletion is intentionally not attempted."
+    ),
+    responses={
+        204: {"description": "Pending file record deleted from database."},
+        400: {"description": "File cannot be deleted unless ingest status is pending."},
+        404: {"description": "File not found."},
+        401: {"description": "Missing or invalid admin token."},
+    },
+)
+async def delete_pending_file(
+    file_id: uuid.UUID,
+    current_user: AdminUser = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    file = await db.get(UploadedFile, file_id)
+    if file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+
+    if file.ingest_status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only files with pending status can be deleted.",
+        )
+
+    await db.delete(file)
+    await db.flush()
+
