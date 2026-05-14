@@ -184,24 +184,24 @@ async def get_file_ingest_status(
     return UploadedFileOut.model_validate(file)
 
 
-# ── Pending file deletion (DB-only) ────────────────────────────────────────────
+# ── File deletion (DB-only) ─────────────────────────────────────────────────────
 
 @router.delete(
     "/files/{file_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a pending file record",
+    summary="Delete a file record",
     description=(
-        "Deletes only the database record for a file when its ingest status is "
-        "'pending'. S3 object deletion is intentionally not attempted."
+        "Deletes the database record for a file regardless of ingest status. "
+        "If a Celery ingest task is still active, revocation is attempted first. "
+        "S3 object deletion is intentionally not attempted."
     ),
     responses={
-        204: {"description": "Pending file record deleted from database."},
-        400: {"description": "File cannot be deleted unless ingest status is pending."},
+        204: {"description": "File record deleted from database."},
         404: {"description": "File not found."},
         401: {"description": "Missing or invalid admin token."},
     },
 )
-async def delete_pending_file(
+async def delete_file(
     file_id: uuid.UUID,
     current_user: AdminUser = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
@@ -210,11 +210,9 @@ async def delete_pending_file(
     if file is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
 
-    if file.ingest_status != "pending":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only files with pending status can be deleted.",
-        )
+    if file.celery_task_id and file.ingest_status in ("queued", "processing"):
+        # Best-effort task revocation so polling does not continue for deleted rows.
+        celery_app.control.revoke(file.celery_task_id, terminate=True)
 
     await db.delete(file)
     await db.flush()
